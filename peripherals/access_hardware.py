@@ -3,6 +3,7 @@
 import math
 import time
 import threading
+from access_control import servo_parameters
 
 
 class AccessHardware:
@@ -28,9 +29,7 @@ class AccessHardware:
             self.green = self._keep(LED(settings.green_pin, initial_value=False))
             self.red = self._keep(LED(settings.red_pin, initial_value=False))
             self.servo = self._keep(AngularServo(
-                settings.servo_pin, min_angle=0, max_angle=180, initial_angle=None,
-                min_pulse_width=settings.servo_min_pulse,
-                max_pulse_width=settings.servo_max_pulse))
+                settings.servo_pin, **servo_parameters(settings)))
         except Exception:
             self.close()
             raise

@@ -91,6 +91,27 @@ SERVO_MOVE_SECONDS=0.5
 
 Các giá trị bổ sung mặc định được mô tả trong `.env.example`. `ACTIVATION_DISTANCE_CM`, `RELEASE_DISTANCE_CM`, `REARM_CLEAR_SECONDS` cũ bị bỏ qua: chỉ cần pull mã mới và chạy lại là không bị điều kiện 60/80 cm cũ nữa. `LED_RED_PINS`, `LED_GREEN_PINS`, `ENABLE_PAD` cũ không còn được dùng; `--no-pad` và phím `p` bị loại bỏ để không có đường bỏ qua PAD cho servo.
 
+## Hiệu chỉnh SG90 khi lệnh 90° chỉ quay khoảng 45°
+
+Bản cũ khai báo dải góc 0..180° cho xung 1..2 ms, nên lệnh 0→90° chỉ tăng xung 1.0→1.5 ms. Dựa trên quan sát SG90 của bạn quay khoảng 45°, bản này ánh xạ **hai đầu dải góc đang dùng 0..90°** vào 1.0..2.0 ms. Đây là hiệu chỉnh dựa trên quan sát, không phải bảo đảm mọi SG90 đều quay đúng 90° với cùng dải xung. Góc phải đo trên servo thật, tốt nhất tháo tải để kiểm tra.
+
+Dừng app bằng Ctrl+C, rồi thử độc lập (không có camera, distance hoặc PAD):
+
+```bash
+GPIOZERO_PIN_FACTORY=lgpio python -m peripherals.servo_calibrate --min-us 1000 --max-us 2000
+```
+
+Chu kỳ thử: về góc gốc → đến góc mở, giữ 5 giây → về góc gốc → ngắt PWM. Không tự sửa `.env`. Nếu quay đúng, giữ trong `.env`:
+
+```dotenv
+SERVO_HOME_ANGLE=0
+SERVO_OPEN_ANGLE=90
+SERVO_MIN_PULSE_SECONDS=0.001
+SERVO_MAX_PULSE_SECONDS=0.002
+```
+
+Nếu vẫn thiếu góc, tăng `--max-us` từng 50 µs (ví dụ 2050), đo lại; nếu dư góc thì giảm từng 50 µs. Giữ nguyên `--min-us` nếu góc gốc đúng. Khi thấy chạm chặn, rít hoặc kẹt, Ctrl+C để ngắt PWM và giảm lại, không ép servo. Dùng giới hạn đúng theo servo thực tế. Khi tìm được giá trị, ghi số giây tương ứng vào `.env` rồi chạy lại app, ví dụ 2050 µs là `0.00205`. Đừng tăng góc logic lên 180° để bù, vì yêu cầu vẫn là khoảng dịch chuyển 90° thực.
+
 ## Kiểm tra cảm biến trước khi chạy AI
 
 Lệnh này chỉ đo khoảng cách, không điều khiển LED hoặc servo:
@@ -162,6 +183,6 @@ python -m unittest discover -s tests -v
 
 Các bài test dùng camera/AI/GPIO giả để kiểm tra quyết định, lỗi cảm biến/camera/AI, chỉ xử lý một mặt, không cấp quyền cho spoof/unknown, timer servo và tái kích hoạt. Không cần Pi hoặc ONNX Runtime để chạy chúng; cần `python-dotenv` để import entrypoint. Không thay thế thử nghiệm vật lý trên Pi.
 
-Kiểm chứng local ngày 19/10/2026: **29 bài test đạt**, gồm kiểm tra khóa đo distance/camera/AI trong toàn chu kỳ servo ở cả GUI và headless, và tiếp tục xác minh ngay khi hết chu kỳ. Bản trước đã kiểm tra bổ sung bằng gpiozero 2.0.1 `MockFactory`/`MockPWMPin` cho ánh xạ LED và chu kỳ servo 0→90→giữ 5 giây→0→detach. Chưa xác nhận bản khóa luồng mới đã hết giật trên servo vật lý; nguồn cấp, tải và PWM phần mềm vẫn cần kiểm tra trên Pi.
+Kiểm chứng local ngày 19/10/2026: **30 bài test đạt**, gồm kiểm tra khóa đo distance/camera/AI trong toàn chu kỳ servo ở cả GUI và headless, và tiếp tục xác minh ngay khi hết chu kỳ. Bản trước đã kiểm tra bổ sung bằng gpiozero 2.0.1 `MockFactory`/`MockPWMPin` cho ánh xạ LED và chu kỳ servo 0→90→giữ 5 giây→0→detach. Chưa xác nhận bản khóa luồng mới đã hết giật trên servo vật lý; nguồn cấp, tải và PWM phần mềm vẫn cần kiểm tra trên Pi.
 
 File `KE_HOACH_CHAY_PI_TRONG_30_PHUT.md` giữ nguyên tiến độ bản triển khai cũ. Với luồng siêu âm/servo mới, dùng hướng dẫn và checklist trong README này; các bước ma trận 10 LED và `--no-pad` trong kế hoạch cũ không còn áp dụng.

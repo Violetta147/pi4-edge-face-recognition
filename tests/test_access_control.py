@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from access_control import AccessPolicy, Settings
+from access_control import AccessPolicy, Settings, servo_parameters
 from peripherals.access_hardware import AccessHardware
 from run import EdgeApp
 
@@ -256,6 +256,17 @@ class FlowTests(unittest.TestCase):
 
 
 class PolicyTests(unittest.TestCase):
+    def test_servo_maps_used_90_degree_range_to_full_calibrated_pulse_span(self):
+        settings = Settings()
+        params = servo_parameters(settings)
+        self.assertEqual((params['min_angle'], params['max_angle']), (0, 90))
+        self.assertEqual((params['min_pulse_width'], params['max_pulse_width']), (.001, .002))
+        pulse = lambda angle: params['min_pulse_width'] + (
+            angle - params['min_angle']) / (params['max_angle'] - params['min_angle']) * (
+                params['max_pulse_width'] - params['min_pulse_width'])
+        self.assertAlmostEqual(pulse(settings.servo_home_angle), .001)
+        self.assertAlmostEqual(pulse(settings.servo_open_angle), .002)
+
     def test_legacy_distance_settings_do_not_restrict_obstacle_detection(self):
         with patch.dict('os.environ', {'ACTIVATION_DISTANCE_CM': '60',
                                      'RELEASE_DISTANCE_CM': '80', 'REARM_CLEAR_SECONDS': '1'}, clear=True):

@@ -94,6 +94,20 @@ def bbox_iou(a, b):
     return intersection / union if union > 0 else 0.0
 
 
+def servo_parameters(settings):
+    """Calibrate the used 90-degree travel, not an unmeasured 180-degree range.
+
+    Defaults map 0 -> 1000 us and 90 -> 2000 us. Physical angles must be measured.
+    """
+    return {
+        'min_angle': min(settings.servo_home_angle, settings.servo_open_angle),
+        'max_angle': max(settings.servo_home_angle, settings.servo_open_angle),
+        'min_pulse_width': settings.servo_min_pulse,
+        'max_pulse_width': settings.servo_max_pulse,
+        'initial_angle': None,
+    }
+
+
 class AccessPolicy:
     """Any valid obstacle enables verification, with a short echo-dropout grace."""
 
