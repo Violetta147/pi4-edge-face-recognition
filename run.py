@@ -137,6 +137,26 @@ class EdgeApp:
 
     def step(self):
         self.hardware.tick()
+        if self.hardware.servo_busy:
+            # No sensor polling, camera or AI can interrupt/restart the servo cycle.
+            self.release_camera()
+            self.reset_evidence()
+            self.policy.last_obstacle = None
+            self.policy.active = False
+            self.status = 'SERVO_ACTIVE'
+            now = time.monotonic()
+            if self.previous_status != self.status:
+                self.hardware.show(self.status)
+            if self.previous_status != self.status or now - self.last_log >= 1:
+                print('[SERVO_ACTIVE] Distance/camera/PAD paused until servo returns.', flush=True)
+                self.last_log = now
+            self.previous_status = self.status
+            if not self.args.headless:
+                import cv2
+                # Pump GUI events only; keep the previous image, never capture/detect.
+                if cv2.waitKey(1) & 0xFF in (ord('q'), 27):
+                    self.running = False
+            return self.status
         distance = self.hardware.distance_cm()
         self.distance = distance
         enabled = self.policy.update_distance(distance, time.monotonic(), self.hardware.servo_busy)
@@ -146,9 +166,7 @@ class EdgeApp:
             if self.args.headless:
                 self.release_camera()
             self.reset_evidence()
-            if self.hardware.servo_busy:
-                self.status = 'SERVO_ACTIVE'
-            elif distance is None or not math.isfinite(distance) or distance <= 0:
+            if distance is None or not math.isfinite(distance) or distance <= 0:
                 self.status = 'SENSOR_ERROR'
             else:
                 self.status = 'WAITING'

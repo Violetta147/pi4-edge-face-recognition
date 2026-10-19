@@ -94,7 +94,7 @@ class FlowTests(unittest.TestCase):
         self.alignment = patch.dict('sys.modules', {
             'alignment': SimpleNamespace(align_face=lambda *a: object()),
             'cv2': SimpleNamespace(CAP_PROP_FRAME_WIDTH=3, CAP_PROP_FRAME_HEIGHT=4,
-                                   CAP_PROP_BUFFERSIZE=38)})
+                                   CAP_PROP_BUFFERSIZE=38, waitKey=lambda delay: -1)})
         self.alignment.start()
 
     def tearDown(self):
@@ -151,6 +151,28 @@ class FlowTests(unittest.TestCase):
         self.hardware.distance = 30
         self.assertNotIn('REAL_KNOWN', self.steps(4))
         self.assertEqual(self.hardware.grants, 0)
+
+    def test_servo_cycle_locks_out_distance_camera_and_all_ai(self):
+        self.steps(5)
+        for headless in (True, False):
+            self.app.args.headless = headless
+            with patch.object(self.hardware, 'distance_cm', side_effect=AssertionError('sensor must be paused')), \
+                 patch.object(self.app, 'read_frame', side_effect=AssertionError('camera must be paused')), \
+                 patch.object(self.app, 'process_frame', side_effect=AssertionError('AI must be paused')):
+                self.assertEqual(self.steps(8), ['SERVO_ACTIVE'] * 8)
+        self.app.args.headless = True
+        self.assertEqual(self.hardware.grants, 1)
+        self.assertTrue(self.camera.released)
+        self.hardware.servo_busy = False
+        self.assertEqual(self.app.step(), 'VERIFYING')
+
+    def test_sensor_loss_during_servo_does_not_reuse_old_proximity_after_return(self):
+        self.steps(5)
+        self.app.step()
+        self.hardware.distance = None
+        self.hardware.servo_busy = False
+        self.assertEqual(self.app.step(), 'SENSOR_ERROR')
+        self.assertEqual(self.hardware.grants, 1)
 
     def test_missing_or_different_face_discards_votes(self):
         self.steps(4)

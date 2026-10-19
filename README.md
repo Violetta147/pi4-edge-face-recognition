@@ -18,7 +18,7 @@ Hệ thống chỉ cần HC-SR04 có echo hợp lệ trong tầm đo là bắt �
 3. Cần 3 lần PAD thật liên tiếp trước khi so khớp, rồi 3 lần khớp **cùng tên** liên tiếp mới cấp quyền. Mỗi lần so khớp dùng đặc trưng mới của frame hiện tại. Một kết quả spoof sẽ hủy chuỗi kết quả thật/khớp đang tích lũy.
 4. Mất echo thoáng qua hoặc một số đo nhảy xa được bỏ qua trong `OBSTACLE_GRACE_SECONDS` (2 giây) tính từ echo hợp lệ gần nhất, để camera/PAD không bị bật tắt liên tục. Mất tín hiệu lâu hơn thì dừng PAD và xóa bằng chứng. Mất mặt, đổi vùng mặt rõ rệt hoặc lỗi camera/AI vẫn xóa bằng chứng ngay.
 5. Chỉ chạy servo nếu đủ PAD + so khớp và echo hợp lệ gần nhất chưa quá 2 giây. Không đo lại một mẫu riêng để chặn servo vì một mẫu nhiễu.
-6. Khi servo đang chạy thì tạm dừng xác minh. Servo xong, app **tự xác minh lại**, không cần người dùng lùi ra xa, không có `WAIT_CLEAR`. Nếu bạn đứng nguyên trước camera và lại được xác thực, servo có thể chạy tiếp một chu kỳ mới.
+6. **Khóa trọn chu kỳ servo:** trong lúc về góc gốc, đến 90°, giữ 5 giây và quay về 0°, không đo distance, không đọc camera, không detect, không PAD và không so khớp. Không có lệnh cấp quyền thứ hai chen vào. GUI giữ hình cũ và chỉ nhận phím thoát. Servo về xong thì app **tự xác minh lại ngay**, không thêm nghỉ 2 giây, không cần lùi ra xa và không có `WAIT_CLEAR`. Nếu bạn đứng nguyên trước camera và lại được xác thực, servo có thể chạy tiếp một chu kỳ mới.
 
 Không có echo ngay từ đầu thì chưa kích hoạt PAD; không được coi cảm biến hỏng là có vật cản. Log `SENSOR_ERROR` nghĩa là không có echo hợp lệ trong cửa sổ 2 giây. Khoảng cách vẫn dựa trên đo thời gian bằng phần mềm trên Linux; thay đổi này làm điều kiện chịu được nhiễu ngắn, không phải xác nhận đã sửa được mọi sai số vật lý của cảm biến.
 
@@ -147,7 +147,8 @@ Nếu dùng `GPIOZERO_PIN_FACTORY=mock`, ECHO mặc định không tự tạo xu
 - [ ] Người thật chưa đăng ký: `UNKNOWN`, chỉ LED xanh sáng, servo không chạy.
 - [ ] Ảnh/màn hình bị PAD phân loại spoof: `SPOOF`, chỉ LED đỏ sáng, servo không chạy. Ghi lại sai phân loại thực tế nếu có.
 - [ ] Người đã đăng ký: đủ xác nhận mới có `REAL_KNOWN`; servo 0→90°, giữ 5 giây, về 0° và ngắt PWM.
-- [ ] Servo xong, tiếp tục đứng trước cảm biến: tự xác minh lại; chỉ chạy servo tiếp sau khi đủ kết quả PAD/khớp mới.
+- [ ] Suốt `SERVO_ACTIVE`: không đo distance, không camera/detect/PAD; vật di chuyển hoặc mất mặt không thay đổi chu kỳ servo.
+- [ ] Servo về xong: lập tức đo cảm biến và xác minh lại, không có khoảng nghỉ bổ sung; chỉ chạy tiếp sau khi đủ kết quả PAD/khớp mới.
 - [ ] Mất mặt/mất echo quá 2 giây/lỗi AI: không cấp quyền mới và không dùng lại tên cũ.
 - [ ] Ctrl+C giải phóng webcam, tắt LED, ngắt PWM và đóng GPIO.
 
@@ -161,6 +162,6 @@ python -m unittest discover -s tests -v
 
 Các bài test dùng camera/AI/GPIO giả để kiểm tra quyết định, lỗi cảm biến/camera/AI, chỉ xử lý một mặt, không cấp quyền cho spoof/unknown, timer servo và tái kích hoạt. Không cần Pi hoặc ONNX Runtime để chạy chúng; cần `python-dotenv` để import entrypoint. Không thay thế thử nghiệm vật lý trên Pi.
 
-Kiểm chứng local ngày 19/10/2026: **27 bài test đạt** cho phiên bản điều kiện vật cản đơn giản. Bản trước đã kiểm tra bổ sung bằng gpiozero 2.0.1 `MockFactory`/`MockPWMPin` cho ánh xạ LED và chu kỳ servo 0→90→giữ 5 giây→0→detach. Log bạn gửi từ Pi ở bản trước có `REAL_KNOWN`, lệnh servo và hoàn tất chu kỳ, sau đó bị `WAIT_CLEAR` chặn; bản này bỏ khóa đó. Chưa chạy trực tiếp phiên bản điều kiện mới trên Pi hoặc xác nhận chuyển động servo vật lý.
+Kiểm chứng local ngày 19/10/2026: **29 bài test đạt**, gồm kiểm tra khóa đo distance/camera/AI trong toàn chu kỳ servo ở cả GUI và headless, và tiếp tục xác minh ngay khi hết chu kỳ. Bản trước đã kiểm tra bổ sung bằng gpiozero 2.0.1 `MockFactory`/`MockPWMPin` cho ánh xạ LED và chu kỳ servo 0→90→giữ 5 giây→0→detach. Chưa xác nhận bản khóa luồng mới đã hết giật trên servo vật lý; nguồn cấp, tải và PWM phần mềm vẫn cần kiểm tra trên Pi.
 
 File `KE_HOACH_CHAY_PI_TRONG_30_PHUT.md` giữ nguyên tiến độ bản triển khai cũ. Với luồng siêu âm/servo mới, dùng hướng dẫn và checklist trong README này; các bước ma trận 10 LED và `--no-pad` trong kế hoạch cũ không còn áp dụng.
