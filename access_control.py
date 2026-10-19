@@ -12,9 +12,8 @@ class Settings:
     servo_pin: int = 18
     green_pin: int = 17
     red_pin: int = 27
-    activation_cm: float = 60.0
-    release_cm: float = 80.0
-    clear_seconds: float = 1.0
+    activation_cm: float = 400.0
+    obstacle_grace_seconds: float = 2.0
     sensor_timeout: float = 0.03
     poll_seconds: float = 0.1
     servo_hold_seconds: float = 5.0
@@ -37,9 +36,9 @@ class Settings:
         numeric = [v for v in vars(self).values() if isinstance(v, (int, float))]
         if not all(math.isfinite(v) for v in numeric):
             raise ValueError('Configuration values must be finite')
-        if not 0 < self.activation_cm < self.release_cm < self.sensor_timeout * 17150:
-            raise ValueError('Require 0 < activation < release < ultrasonic timeout range')
-        if min(self.clear_seconds, self.poll_seconds, self.servo_hold_seconds,
+        if not 0 < self.activation_cm < self.sensor_timeout * 17150:
+            raise ValueError('Obstacle range must fit ultrasonic timeout range')
+        if min(self.obstacle_grace_seconds, self.poll_seconds, self.servo_hold_seconds,
                self.servo_move_seconds, self.servo_min_pulse) <= 0:
             raise ValueError('Durations must be positive')
         if self.poll_seconds < 0.06 or not 0.005 <= self.sensor_timeout <= 0.05:
@@ -63,9 +62,8 @@ class Settings:
             'servo_pin': ('SERVO_PIN', int),
             'green_pin': ('LED_GREEN_PIN', int),
             'red_pin': ('LED_RED_PIN', int),
-            'activation_cm': ('ACTIVATION_DISTANCE_CM', float),
-            'release_cm': ('RELEASE_DISTANCE_CM', float),
-            'clear_seconds': ('REARM_CLEAR_SECONDS', float),
+            'activation_cm': ('OBSTACLE_MAX_DISTANCE_CM', float),
+            'obstacle_grace_seconds': ('OBSTACLE_GRACE_SECONDS', float),
             'sensor_timeout': ('ULTRASONIC_TIMEOUT_SECONDS', float),
             'poll_seconds': ('SENSOR_POLL_SECONDS', float),
             'servo_hold_seconds': ('SERVO_HOLD_SECONDS', float),
@@ -97,13 +95,13 @@ def bbox_iou(a, b):
 
 
 class AccessPolicy:
-    """Fresh PAD + matching evidence; one servo command per proximity encounter."""
+    """Any valid obstacle enables verification, with a short echo-dropout grace."""
 
     def __init__(self, settings):
         self.settings = settings
         self.active = False
         self.granted = False
-        self.clear_since = None
+        self.last_obstacle = None
         self.reset_face()
 
     def reset_face(self):
@@ -113,26 +111,25 @@ class AccessPolicy:
         self.candidate = None
 
     def update_distance(self, distance_cm, now, servo_busy=False):
-        valid = distance_cm is not None and math.isfinite(distance_cm) and distance_cm > 0
-        if not valid:
-            self.active = False
-            self.clear_since = None
+        valid = (distance_cm is not None and math.isfinite(distance_cm)
+                 and 0 < distance_cm <= self.settings.activation_cm)
+        if valid:
+            self.last_obstacle = now
+        self.active = self.obstacle_recent(now)
+        if servo_busy:
             self.reset_face()
             return False
-        if distance_cm >= self.settings.release_cm:
-            self.active = False
+        if self.granted:
+            # Servo finished: discard the old identity and verify again, without retreat.
+            self.granted = False
             self.reset_face()
-            if servo_busy:
-                self.clear_since = None
-            elif self.clear_since is None:
-                self.clear_since = now
-            elif now - self.clear_since >= self.settings.clear_seconds:
-                self.granted = False
-        else:
-            self.clear_since = None
-            if distance_cm <= self.settings.activation_cm:
-                self.active = True
-        return self.active and not self.granted and not servo_busy
+        if not self.active:
+            self.reset_face()
+        return self.active
+
+    def obstacle_recent(self, now):
+        return (self.last_obstacle is not None
+                and 0 <= now - self.last_obstacle <= self.settings.obstacle_grace_seconds)
 
     def begin_face(self, bbox):
         if self.bbox is None or bbox_iou(self.bbox, bbox) < self.settings.face_iou:

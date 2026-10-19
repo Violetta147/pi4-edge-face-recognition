@@ -1,6 +1,6 @@
 # Nhận diện khuôn mặt kích hoạt bằng siêu âm trên Raspberry Pi 4
 
-Hệ thống chờ HC-SR04 phát hiện vật thể ở gần, sau đó mở USB webcam và xử lý **một khuôn mặt**. PAD (chống giả mạo) luôn bật. Camera được giải phóng khi rời vùng hoặc khi đã cấp quyền; model được nạp một lần lúc khởi động.
+Hệ thống chỉ cần HC-SR04 có echo hợp lệ trong tầm đo là bắt đầu xử lý **một khuôn mặt**. PAD (chống giả mạo) luôn bật khi xử lý mặt. Ở chế độ cửa sổ, camera luôn hiện hình để dễ quan sát; ở headless, camera chỉ mở khi có vật cản. Model được nạp một lần lúc khởi động.
 
 | Kết quả | Phản hồi |
 |---|---|
@@ -13,14 +13,16 @@ Hệ thống chờ HC-SR04 phát hiện vật thể ở gần, sau đó mở USB
 
 ## Luồng xử lý
 
-1. Khoảng cách hợp lệ <= `ACTIVATION_DISTANCE_CM` (mặc định 60 cm) bắt đầu phiên xử lý. Không mở camera hoặc chạy suy luận trước khi có kích hoạt.
+1. Có vật cản là chạy PAD: bất kỳ echo hợp lệ `0 < distance <= OBSTACLE_MAX_DISTANCE_CM` đều kích hoạt, mặc định tối đa 400 cm theo tầm đo HC-SR04. Không còn điều kiện 60/80 cm. Tường hoặc bàn trong tầm đo cũng là vật cản, không chỉ con người.
 2. Detector có thể tìm nhiều mặt, nhưng chỉ mặt có diện tích lớn nhất được đưa vào PAD và ArcFace. Đây không phải cơ chế định danh người bằng cảm biến siêu âm.
 3. Cần 3 lần PAD thật liên tiếp trước khi so khớp, rồi 3 lần khớp **cùng tên** liên tiếp mới cấp quyền. Mỗi lần so khớp dùng đặc trưng mới của frame hiện tại. Một kết quả spoof sẽ hủy chuỗi kết quả thật/khớp đang tích lũy.
-4. Mất mặt, đổi vùng mặt rõ rệt, lỗi camera/AI hoặc tín hiệu khoảng cách không hợp lệ đều xóa bằng chứng đang tích lũy. Lỗi AI không được coi là người chưa đăng ký.
-5. Trước khi chạy servo, đo lại khoảng cách và yêu cầu vẫn <=60 cm. Servo chỉ được kích một lần mỗi lượt tiếp cận; không kích lặp khi người đứng yên.
-6. Sau chu kỳ servo, cần đo được khoảng cách >= `RELEASE_DISTANCE_CM` (80 cm) liên tục 1 giây để cho phép lượt mới. Trong vùng 60–80 cm, giữ trạng thái kích hoạt trước đó để tránh chập chờn.
+4. Mất echo thoáng qua hoặc một số đo nhảy xa được bỏ qua trong `OBSTACLE_GRACE_SECONDS` (2 giây) tính từ echo hợp lệ gần nhất, để camera/PAD không bị bật tắt liên tục. Mất tín hiệu lâu hơn thì dừng PAD và xóa bằng chứng. Mất mặt, đổi vùng mặt rõ rệt hoặc lỗi camera/AI vẫn xóa bằng chứng ngay.
+5. Chỉ chạy servo nếu đủ PAD + so khớp và echo hợp lệ gần nhất chưa quá 2 giây. Không đo lại một mẫu riêng để chặn servo vì một mẫu nhiễu.
+6. Khi servo đang chạy thì tạm dừng xác minh. Servo xong, app **tự xác minh lại**, không cần người dùng lùi ra xa, không có `WAIT_CLEAR`. Nếu bạn đứng nguyên trước camera và lại được xác thực, servo có thể chạy tiếp một chu kỳ mới.
 
-**Mất echo không được coi là người đã rời đi** vì có thể là cảm biến bị ngắt. Khi dùng HC-SR04, bố trí vật nền trong tầm đo phía sau vùng hoạt động để có số đo xa hợp lệ cho bước tái kích hoạt. Log `SENSOR_ERROR` nghĩa là không có số đo hợp lệ; không cấp quyền. Khoảng cách dựa trên đo thời gian bằng phần mềm trên Linux, cần kiểm tra thực tế bằng thước.
+Không có echo ngay từ đầu thì chưa kích hoạt PAD; không được coi cảm biến hỏng là có vật cản. Log `SENSOR_ERROR` nghĩa là không có echo hợp lệ trong cửa sổ 2 giây. Khoảng cách vẫn dựa trên đo thời gian bằng phần mềm trên Linux; thay đổi này làm điều kiện chịu được nhiễu ngắn, không phải xác nhận đã sửa được mọi sai số vật lý của cảm biến.
+
+Trong GUI, camera vẫn hiện hình khi chờ, kèm số đo và trạng thái. `NO_FACE` nghĩa là cảm biến đã kích hoạt detector nhưng chưa dò thấy mặt; `SPOOF` nghĩa là PAD đã chạy và phân loại giả mạo. Với lỗi Qt font trên một số wheel OpenCV, app ưu tiên thư mục font hệ thống nếu đường dẫn font kèm wheel không tồn tại; có thể cài font bằng `sudo apt install -y fonts-dejavu-core`.
 
 ## Phần cứng và chân mặc định
 
@@ -78,9 +80,8 @@ ULTRASONIC_ECHO_PIN=24
 SERVO_PIN=18
 LED_GREEN_PIN=17
 LED_RED_PIN=27
-ACTIVATION_DISTANCE_CM=60
-RELEASE_DISTANCE_CM=80
-REARM_CLEAR_SECONDS=1
+OBSTACLE_MAX_DISTANCE_CM=400
+OBSTACLE_GRACE_SECONDS=2
 SERVO_HOME_ANGLE=0
 SERVO_OPEN_ANGLE=90
 SERVO_HOLD_SECONDS=5
@@ -88,7 +89,7 @@ SERVO_RETURN_HOME=true
 SERVO_MOVE_SECONDS=0.5
 ```
 
-Các giá trị bổ sung mặc định được mô tả trong `.env.example`. `LED_RED_PINS`, `LED_GREEN_PINS`, `ENABLE_PAD` cũ không còn được dùng; `--no-pad` và phím `p` bị loại bỏ để không có đường bỏ qua PAD cho servo.
+Các giá trị bổ sung mặc định được mô tả trong `.env.example`. `ACTIVATION_DISTANCE_CM`, `RELEASE_DISTANCE_CM`, `REARM_CLEAR_SECONDS` cũ bị bỏ qua: chỉ cần pull mã mới và chạy lại là không bị điều kiện 60/80 cm cũ nữa. `LED_RED_PINS`, `LED_GREEN_PINS`, `ENABLE_PAD` cũ không còn được dùng; `--no-pad` và phím `p` bị loại bỏ để không có đường bỏ qua PAD cho servo.
 
 ## Kiểm tra cảm biến trước khi chạy AI
 
@@ -134,20 +135,20 @@ export OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2
 python -u run.py --headless --camera 0
 ```
 
-Để có cửa sổ ảnh, mở Terminal ngay trong desktop Screen sharing và bỏ `--headless`. Cửa sổ chỉ hiển thị một mặt đang xử lý; khi chờ cảm biến sẽ hiển thị nền trống/trạng thái. Bấm `q` trong cửa sổ để thoát hoặc Ctrl+C trong terminal. Remote shell dùng Ctrl+C.
+Để có cửa sổ ảnh, mở Terminal ngay trong desktop Screen sharing và bỏ `--headless`. Camera hiện hình cả khi đang chờ cảm biến; chỉ vẽ khung của một mặt được xử lý. Bấm `q` trong cửa sổ để thoát hoặc Ctrl+C trong terminal. Remote shell dùng Ctrl+C.
 
 Nếu dùng `GPIOZERO_PIN_FACTORY=mock`, ECHO mặc định không tự tạo xung: app sẽ không kích hoạt. Mock không phải cách bỏ qua cảm biến; dùng bài test bên dưới để mô phỏng luồng, không kiểm tra phần cứng bằng trạng thái mock.
 
 ## Checklist nghiệm thu trên Pi
 
-- [ ] Khi khoảng cách >80 cm: `WAITING`, không mở webcam, không chạy suy luận từng frame.
-- [ ] Khi vật đến <=60 cm: bắt đầu đọc camera, chỉ một mặt được xử lý dù ảnh có nhiều người.
+- [ ] Có echo hợp lệ, kể cả vật ở 100–230 cm: bắt đầu dò mặt/PAD, chỉ xử lý một mặt.
+- [ ] Không có echo quá 2 giây: dừng AI; GUI vẫn có camera preview và ghi trạng thái cảm biến.
+- [ ] Một vài số đo nhiễu/mất echo ngắn hơn 2 giây không làm mất chuỗi xác minh đang tích lũy.
 - [ ] Người thật chưa đăng ký: `UNKNOWN`, chỉ LED xanh sáng, servo không chạy.
 - [ ] Ảnh/màn hình bị PAD phân loại spoof: `SPOOF`, chỉ LED đỏ sáng, servo không chạy. Ghi lại sai phân loại thực tế nếu có.
 - [ ] Người đã đăng ký: đủ xác nhận mới có `REAL_KNOWN`; servo 0→90°, giữ 5 giây, về 0° và ngắt PWM.
-- [ ] Tiếp tục đứng trước cảm biến: `WAIT_CLEAR`, không tự mở lại.
-- [ ] Sau khi đo >=80 cm liên tục 1 giây, tiến lại gần: cho phép lượt xác minh mới.
-- [ ] Mất mặt/ngắt echo/lỗi AI: không cấp quyền mới và không dùng lại tên cũ.
+- [ ] Servo xong, tiếp tục đứng trước cảm biến: tự xác minh lại; chỉ chạy servo tiếp sau khi đủ kết quả PAD/khớp mới.
+- [ ] Mất mặt/mất echo quá 2 giây/lỗi AI: không cấp quyền mới và không dùng lại tên cũ.
 - [ ] Ctrl+C giải phóng webcam, tắt LED, ngắt PWM và đóng GPIO.
 
 PAD và ngưỡng cosine vẫn là mô hình suy luận, có thể sai. Việc code yêu cầu PAD/so khớp không phải bằng chứng đạt mức bảo mật hoặc độ chính xác trên mọi người/ánh sáng. Cần kiểm tra đúng webcam, cảm biến và servo thực tế.
@@ -160,6 +161,6 @@ python -m unittest discover -s tests -v
 
 Các bài test dùng camera/AI/GPIO giả để kiểm tra quyết định, lỗi cảm biến/camera/AI, chỉ xử lý một mặt, không cấp quyền cho spoof/unknown, timer servo và tái kích hoạt. Không cần Pi hoặc ONNX Runtime để chạy chúng; cần `python-dotenv` để import entrypoint. Không thay thế thử nghiệm vật lý trên Pi.
 
-Kiểm chứng local ngày 19/10/2026: **23 bài test đạt**; kiểm tra bổ sung với gpiozero 2.0.1 `MockFactory`/`MockPWMPin` đạt cho ánh xạ LED và chu kỳ servo 0→90→giữ 5 giây→0→detach. Chưa chạy luồng siêu âm/servo mới với model, webcam và GPIO thật trên Raspberry Pi. Kết quả nhận diện bạn đã chạy trước đó thuộc phiên bản camera cũ.
+Kiểm chứng local ngày 19/10/2026: **27 bài test đạt** cho phiên bản điều kiện vật cản đơn giản. Bản trước đã kiểm tra bổ sung bằng gpiozero 2.0.1 `MockFactory`/`MockPWMPin` cho ánh xạ LED và chu kỳ servo 0→90→giữ 5 giây→0→detach. Log bạn gửi từ Pi ở bản trước có `REAL_KNOWN`, lệnh servo và hoàn tất chu kỳ, sau đó bị `WAIT_CLEAR` chặn; bản này bỏ khóa đó. Chưa chạy trực tiếp phiên bản điều kiện mới trên Pi hoặc xác nhận chuyển động servo vật lý.
 
 File `KE_HOACH_CHAY_PI_TRONG_30_PHUT.md` giữ nguyên tiến độ bản triển khai cũ. Với luồng siêu âm/servo mới, dùng hướng dẫn và checklist trong README này; các bước ma trận 10 LED và `--no-pad` trong kế hoạch cũ không còn áp dụng.

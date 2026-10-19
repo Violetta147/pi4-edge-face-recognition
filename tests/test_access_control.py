@@ -105,7 +105,7 @@ class FlowTests(unittest.TestCase):
         return [self.app.step() for _ in range(count)]
 
     def test_far_or_invalid_distance_never_opens_camera_or_runs_ai(self):
-        for distance in (100, None, float('nan'), 0, -1):
+        for distance in (500, None, float('nan'), 0, -1):
             self.hardware.distance = distance
             self.app.step()
         self.assertEqual(sum(self.calls.values()), 0)
@@ -130,7 +130,7 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(self.hardware.status, 'UNKNOWN')
         self.assertEqual(self.hardware.grants, 0)
 
-    def test_known_requires_confirmations_and_only_one_cycle_per_encounter(self):
+    def test_known_requires_confirmations_and_pauses_only_while_servo_busy(self):
         self.assertNotIn('REAL_KNOWN', self.steps(4))
         self.assertEqual(self.app.step(), 'REAL_KNOWN')
         self.assertEqual(self.hardware.grants, 1)
@@ -138,14 +138,16 @@ class FlowTests(unittest.TestCase):
         self.steps(3)
         self.assertEqual(self.calls, before)
         self.hardware.servo_busy = False
-        self.assertEqual(self.steps(5), ['WAIT_CLEAR'] * 5)
-        self.assertEqual(self.hardware.grants, 1)
+        self.assertNotIn('REAL_KNOWN', self.steps(4))
+        self.assertEqual(self.app.step(), 'REAL_KNOWN')
+        self.assertEqual(self.hardware.grants, 2)
         self.assertTrue(self.camera.released)
 
     def test_sensor_loss_discards_previous_votes(self):
         self.steps(4)
         self.hardware.distance = None
-        self.assertEqual(self.app.step(), 'SENSOR_ERROR')
+        with patch('run.time.monotonic', return_value=self.app.policy.last_obstacle + 3):
+            self.assertEqual(self.app.step(), 'SENSOR_ERROR')
         self.hardware.distance = 30
         self.assertNotIn('REAL_KNOWN', self.steps(4))
         self.assertEqual(self.hardware.grants, 0)
@@ -178,15 +180,20 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(self.app.step(), 'VERIFYING')
         self.assertEqual(self.app.step(), 'REAL_KNOWN')
 
-    def test_new_encounter_requires_new_verification_after_servo_and_clear(self):
+    def test_any_obstacle_including_far_background_activates(self):
+        self.hardware.distance = 229.4
+        self.assertEqual(self.app.step(), 'VERIFYING')
+        self.assertEqual(self.calls['pad'], 1)
+
+    def test_short_echo_dropout_preserves_verification(self):
+        self.steps(4)
+        self.hardware.distance = None
+        self.assertEqual(self.app.step(), 'REAL_KNOWN')
+        self.assertEqual(self.hardware.grants, 1)
+
+    def test_servo_completion_automatically_restarts_verification(self):
         self.steps(5)
         self.hardware.servo_busy = False
-        self.hardware.distance = 100
-        with patch('run.time.monotonic', return_value=10):
-            self.app.step()
-        with patch('run.time.monotonic', return_value=12):
-            self.app.step()
-        self.hardware.distance = 30
         self.assertNotIn('REAL_KNOWN', self.steps(4))
         self.assertEqual(self.hardware.grants, 1)
         self.assertEqual(self.app.step(), 'REAL_KNOWN')
@@ -199,12 +206,25 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(self.app.policy.real_count, 0)
         self.assertEqual(self.hardware.grants, 0)
 
-    def test_distance_checked_again_immediately_before_actuation(self):
+    def test_slow_inference_cannot_grant_using_expired_obstacle(self):
         self.steps(4)
-        with patch.object(self.hardware, 'distance_cm', side_effect=[30, 120]):
+        with patch.object(self.app.detector, 'detect', side_effect=lambda frame: self._expire_obstacle()):
             self.assertEqual(self.app.step(), 'WAITING')
         self.assertEqual(self.hardware.grants, 0)
         self.assertFalse(self.app.policy.granted)
+
+    def _expire_obstacle(self):
+        self.app.policy.last_obstacle -= 3
+        return self.faces
+
+    def test_gui_keeps_preview_without_running_pad_when_no_echo(self):
+        self.app.args.headless = False
+        self.hardware.distance = None
+        with patch.object(self.app, 'draw'):
+            self.assertEqual(self.app.step(), 'SENSOR_ERROR')
+        self.assertEqual(self.calls['camera'], 1)
+        self.assertEqual(self.calls['pad'], 0)
+        self.app.args.headless = True
 
     def test_ai_failure_not_unknown_and_does_not_grant(self):
         with patch.object(self.app.antispoof, 'predict', side_effect=RuntimeError('model failed')):
@@ -214,23 +234,29 @@ class FlowTests(unittest.TestCase):
 
 
 class PolicyTests(unittest.TestCase):
-    def test_hysteresis_and_valid_clear_required_to_rearm(self):
+    def test_legacy_distance_settings_do_not_restrict_obstacle_detection(self):
+        with patch.dict('os.environ', {'ACTIVATION_DISTANCE_CM': '60',
+                                     'RELEASE_DISTANCE_CM': '80', 'REARM_CLEAR_SECONDS': '1'}, clear=True):
+            settings = Settings.from_env()
+        p = AccessPolicy(settings)
+        self.assertTrue(p.update_distance(229, 0))
+
+    def test_any_obstacle_grace_and_no_clear_requirement(self):
         p = AccessPolicy(Settings())
-        self.assertFalse(p.update_distance(70, 0))
-        self.assertTrue(p.update_distance(60, 1))
-        self.assertTrue(p.update_distance(70, 2))
+        self.assertFalse(p.update_distance(None, 0))
+        self.assertTrue(p.update_distance(229, 1))
+        self.assertTrue(p.update_distance(None, 2))
+        self.assertTrue(p.update_distance(500, 2.5))
+        self.assertFalse(p.update_distance(None, 3.1))
+        self.assertTrue(p.update_distance(30, 4))
         p.granted = True
-        self.assertFalse(p.update_distance(80, 3, servo_busy=True))
-        p.update_distance(100, 4)
-        p.update_distance(None, 5)
+        self.assertFalse(p.update_distance(30, 5, servo_busy=True))
         self.assertTrue(p.granted)
-        p.update_distance(100, 6)
-        p.update_distance(100, 7.01)
+        self.assertTrue(p.update_distance(30, 6))
         self.assertFalse(p.granted)
-        self.assertTrue(p.update_distance(30, 8))
 
     def test_bad_configuration_rejected_before_hardware(self):
-        for kwargs in ({'echo_pin': 23}, {'activation_cm': 100},
+        for kwargs in ({'echo_pin': 23}, {'activation_cm': 600},
                        {'servo_hold_seconds': 0}, {'servo_open_angle': 80},
                        {'pad_threshold': float('nan')}, {'poll_seconds': 0.01}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):

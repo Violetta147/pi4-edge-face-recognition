@@ -45,6 +45,7 @@ class EdgeApp:
         self.last_log = float('-inf')
         self.last_error = float('-inf')
         self.previous_status = None
+        self.distance = None
         self.args.headless = args.headless or not (os.getenv('DISPLAY') or os.getenv('WAYLAND_DISPLAY'))
         try:
             if self.hardware is None:
@@ -124,9 +125,8 @@ class EdgeApp:
             raise ValueError('Invalid cosine score')
         status = self.policy.observe_match(self.name, self.score)
         if status == 'REAL_KNOWN':
-            # Recheck proximity after inference, before touching the actuator.
-            distance = self.hardware.distance_cm()
-            if distance is None or not math.isfinite(distance) or not 0 < distance <= self.settings.activation_cm:
+            # One noisy ping must not cancel recognition; do not use expired evidence.
+            if not self.policy.obstacle_recent(time.monotonic()):
                 self.policy.granted = False
                 self.policy.active = False
                 self.reset_evidence()
@@ -138,18 +138,27 @@ class EdgeApp:
     def step(self):
         self.hardware.tick()
         distance = self.hardware.distance_cm()
+        self.distance = distance
         enabled = self.policy.update_distance(distance, time.monotonic(), self.hardware.servo_busy)
         frame, face = None, None
         self.detail = ''
         if not enabled:
-            self.release_camera()
+            if self.args.headless:
+                self.release_camera()
             self.reset_evidence()
             if self.hardware.servo_busy:
                 self.status = 'SERVO_ACTIVE'
             elif distance is None or not math.isfinite(distance) or distance <= 0:
                 self.status = 'SENSOR_ERROR'
             else:
-                self.status = 'WAIT_CLEAR' if self.policy.granted else 'WAITING'
+                self.status = 'WAITING'
+            if not self.args.headless:
+                try:
+                    frame = self.read_frame()  # Preview only: detector/PAD remain gated.
+                except Exception as exc:
+                    self.detail = str(exc)
+                    self.status = 'ERROR'
+                    self.release_camera()
         else:
             try:
                 frame = self.read_frame()
@@ -169,6 +178,8 @@ class EdgeApp:
             name = f' | {self.name} cosine={self.score:.3f}' if self.name and self.score is not None else ''
             pad = f' | PAD={self.pad_score:.3f}' if self.pad_score is not None else ''
             print(f'[{self.status}] distance={d}{name}{pad}', flush=True)
+            if self.detail:
+                print(f'[DETAIL] {self.detail}', flush=True)
             self.last_log, self.previous_status = now, self.status
         if not self.args.headless:
             self.draw(frame, face)
@@ -177,6 +188,13 @@ class EdgeApp:
     def draw(self, frame, face):
         import cv2
         import numpy as np
+        # Some OpenCV wheels point Qt at a bundled font directory that is absent.
+        font_dir = os.environ.get('QT_QPA_FONTDIR')
+        if not font_dir or not Path(font_dir).is_dir():
+            for candidate in ('/usr/share/fonts/truetype/dejavu', '/usr/share/fonts/truetype/liberation2'):
+                if Path(candidate).is_dir():
+                    os.environ['QT_QPA_FONTDIR'] = candidate
+                    break
         if frame is None:
             frame = np.zeros((480, 640, 3), dtype=np.uint8)
         else:
@@ -189,12 +207,18 @@ class EdgeApp:
         label = self.status + (f': {self.name}' if self.name else '')
         cv2.putText(frame, label, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, .6, color, 2)
         cv2.putText(frame, '[Q] Exit | PAD always ON', (10, 52), cv2.FONT_HERSHEY_SIMPLEX, .5, (255, 255, 255), 1)
+        distance = 'NO ECHO' if self.distance is None else f'{self.distance:.1f} cm'
+        cv2.putText(frame, f'Sensor: {distance}', (10, 78), cv2.FONT_HERSHEY_SIMPLEX, .5, (255, 255, 255), 1)
+        hint = {'WAITING': 'Waiting for any obstacle', 'SENSOR_ERROR': 'No echo: check sensor/wiring',
+                'NO_FACE': 'Obstacle detected; no face found', 'SERVO_ACTIVE': 'Servo running; resumes automatically',
+                'VERIFYING': 'Checking live face and identity'}.get(self.status, '')
+        cv2.putText(frame, hint, (10, 104), cv2.FONT_HERSHEY_SIMPLEX, .5, (255, 255, 255), 1)
         cv2.imshow('Pi access control', frame)
         if cv2.waitKey(1) & 0xFF in (ord('q'), 27):
             self.running = False
 
     def run(self):
-        print(f'[START] One face | PAD always ON | activation <= {self.settings.activation_cm:g} cm', flush=True)
+        print(f'[START] Any obstacle <= {self.settings.activation_cm:g} cm | echo grace {self.settings.obstacle_grace_seconds:g}s | PAD always ON', flush=True)
         print('[START] UNKNOWN -> green; SPOOF -> red; REAL_KNOWN -> servo. Ctrl+C to exit.', flush=True)
         try:
             while self.running:
