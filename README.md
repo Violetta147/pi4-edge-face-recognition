@@ -1,192 +1,165 @@
-# HỆ THỐNG NHẬN DIỆN KHUÔN MẶT & CHỐNG GIẢ MẠO TẦNG BIÊN (PI 4)
-> **Dự án IoT Edge AI:** Nhận diện khuôn mặt thời gian thực & Chống giả mạo sinh trắc học (Liveness Detection) kết hợp Bảng điều khiển phần cứng **Ma trận 10 LED (2 hàng x 5 cột)** trên **Raspberry Pi 4 + USB Webcam**.
+# Nhận diện khuôn mặt kích hoạt bằng siêu âm trên Raspberry Pi 4
 
----
+Hệ thống chờ HC-SR04 phát hiện vật thể ở gần, sau đó mở USB webcam và xử lý **một khuôn mặt**. PAD (chống giả mạo) luôn bật. Camera được giải phóng khi rời vùng hoặc khi đã cấp quyền; model được nạp một lần lúc khởi động.
 
-## ĐẶC ĐIỂM
+| Kết quả | Phản hồi |
+|---|---|
+| Mặt thật và khớp người đã đăng ký | Servo đến 90°, giữ **5 giây**, quay về 0°, ngắt PWM; cả hai LED tắt |
+| Mặt thật nhưng không khớp cơ sở dữ liệu | Bật LED **xanh**, không chạy servo |
+| Giả mạo (spoof) | Bật LED **đỏ**, không chạy servo |
+| Chờ cảm biến, chưa có mặt, đang xác minh hoặc lỗi AI | Hai LED tắt, không cấp quyền mới |
 
-- **Xử lý cục bộ:** Chạy trực tiếp trên Raspberry Pi 4, không kết nối server bên ngoài.
-- **Lưu trữ dữ liệu:** Sử dụng SQLite (`faces.db`) để lưu trữ thông tin người dùng và vector đặc trưng 512 chiều trích xuất từ ArcFace MobileFaceNet.
-- **Hai chế độ hoạt động:**
-  - *Chế độ 1 (KHÔNG PAD):* Bỏ qua bước kiểm tra liveness để tối ưu tốc độ xử lý; các đèn LED Xanh sáng theo số lượng khuôn mặt phát hiện được.
-  - *Chế độ 2 (CÓ PAD):* Tích hợp mô hình MiniFASNetV2 để phân biệt người thật và ảnh/màn hình giả mạo; giới hạn xử lý tối đa 5 khuôn mặt tương ứng 5 cột LED.
-  - *Chuyển đổi chế độ:* Phím `p` trên bàn phím, cờ dòng lệnh CLI (`--pad` / `--no-pad`), hoặc cấu hình trong `.env`.
-- **Chỉ thị trạng thái bằng 10 LED (gpiozero):** Bố trí 2 hàng x 5 cột (5 Đỏ, 5 Xanh) hiển thị trạng thái từng khuôn mặt (Spoof: Đỏ, Real: Xanh, Unknown: Đỏ + Xanh).
-- **Đăng ký khuôn mặt (`enroll.py`):** Hỗ trợ chụp mẫu qua webcam (chụp 5 frame tính vector trung bình) hoặc quét từ thư mục ảnh.
+**Xanh có nghĩa là người thật chưa đăng ký**, theo yêu cầu của dự án. Không sử dụng cách hiểu màu của ma trận LED ở phiên bản trước.
 
----
+## Luồng xử lý
 
-## 🛠️ YÊU CẦU PHẦN CỨNG & SƠ ĐỒ ĐẤU DÂY GPIO
+1. Khoảng cách hợp lệ <= `ACTIVATION_DISTANCE_CM` (mặc định 60 cm) bắt đầu phiên xử lý. Không mở camera hoặc chạy suy luận trước khi có kích hoạt.
+2. Detector có thể tìm nhiều mặt, nhưng chỉ mặt có diện tích lớn nhất được đưa vào PAD và ArcFace. Đây không phải cơ chế định danh người bằng cảm biến siêu âm.
+3. Cần 3 lần PAD thật liên tiếp trước khi so khớp, rồi 3 lần khớp **cùng tên** liên tiếp mới cấp quyền. Mỗi lần so khớp dùng đặc trưng mới của frame hiện tại. Một kết quả spoof sẽ hủy chuỗi kết quả thật/khớp đang tích lũy.
+4. Mất mặt, đổi vùng mặt rõ rệt, lỗi camera/AI hoặc tín hiệu khoảng cách không hợp lệ đều xóa bằng chứng đang tích lũy. Lỗi AI không được coi là người chưa đăng ký.
+5. Trước khi chạy servo, đo lại khoảng cách và yêu cầu vẫn <=60 cm. Servo chỉ được kích một lần mỗi lượt tiếp cận; không kích lặp khi người đứng yên.
+6. Sau chu kỳ servo, cần đo được khoảng cách >= `RELEASE_DISTANCE_CM` (80 cm) liên tục 1 giây để cho phép lượt mới. Trong vùng 60–80 cm, giữ trạng thái kích hoạt trước đó để tránh chập chờn.
 
-### 1. Danh mục linh kiện:
-1. **Board Raspberry Pi 4** (RAM 2GB, 4GB hoặc 8GB) đã cài Raspberry Pi OS 64-bit.
-2. **1 USB Webcam tiêu chuẩn** (cắm cổng USB 2.0 hoặc 3.0).
-3. **5 Đèn LED Đỏ + 5 Đèn LED Xanh lá**.
-4. **10 Điện trở** ($220\Omega$ đến $330\Omega$) và Dây cắm Breadboard (Jumper Wires).
+**Mất echo không được coi là người đã rời đi** vì có thể là cảm biến bị ngắt. Khi dùng HC-SR04, bố trí vật nền trong tầm đo phía sau vùng hoạt động để có số đo xa hợp lệ cho bước tái kích hoạt. Log `SENSOR_ERROR` nghĩa là không có số đo hợp lệ; không cấp quyền. Khoảng cách dựa trên đo thời gian bằng phần mềm trên Linux, cần kiểm tra thực tế bằng thước.
 
----
+## Phần cứng và chân mặc định
 
-### 2. Sơ đồ Ma trận 10 LED (2 hàng x 5 cột):
+Dùng **HC-SR04 và servo vị trí 0–180°**. Servo quay liên tục không thể điều khiển góc 90° theo cách này. Các chân bên dưới là đề xuất có thể sửa trong `.env`, chưa phải xác nhận dây thực tế của bạn.
 
-```text
-         Cột 1       Cột 2       Cột 3       Cột 4       Cột 5
-       (Slot 1)    (Slot 2)    (Slot 3)    (Slot 4)    (Slot 5)
-     ┌───────────┬───────────┬───────────┬───────────┬───────────┐
-  🔴 │ LED Đỏ 1  │ LED Đỏ 2  │ LED Đỏ 3  │ LED Đỏ 4  │ LED Đỏ 5  │  <- Hàng 1 (Đỏ)
-  🟢 │ LED Xanh 1│ LED Xanh 2│ LED Xanh 3│ LED Xanh 4│ LED Xanh 5│  <- Hàng 2 (Xanh)
-     └───────────┴───────────┴───────────┴───────────┴───────────┘
-```
+| Thiết bị | BCM | Chân vật lý Pi 4 |
+|---|---|---|
+| HC-SR04 TRIG | 23 | 16 |
+| HC-SR04 ECHO qua chia áp | 24 | 18 |
+| Servo tín hiệu | 18 | 12 |
+| LED xanh qua điện trở | 17 | 11 |
+| LED đỏ qua điện trở | 27 | 13 |
+| GND chung | — | Ví dụ chân 6 |
 
-### 3. Bảng Đấu Nối Chân GPIO (Chuẩn BCM):
+- **Tắt nguồn khi thay dây.** Ngắt mạch ma trận 10 LED cũ khỏi GPIO23/24/18 vì các chân này nay dùng cho cảm biến và servo. Module `peripherals/led_matrix.py` được giữ làm tham khảo cũ, không còn được `run.py` sử dụng.
+- HC-SR04 thông thường cấp 5 V; ECHO là 5 V, **không nối thẳng vào GPIO Pi**. Dùng bộ chuyển mức hoặc chia áp. Ví dụ từ tài liệu gpiozero: ECHO → 330 Ω → nút nối GPIO24; nút này → 470 Ω → GND (khoảng 2.94 V). HC-SR04P có thể khác, xem thông số đúng module.
+- Mỗi LED dùng điện trở 220–330 Ω, cathode về GND.
+- Servo dùng nguồn ngoài đúng điện áp/dòng của loại servo; nối GND nguồn servo chung với Pi. Không cấp nguồn motor từ chân GPIO hoặc 3.3 V.
+- Chân servo không phát PWM khi vừa mở app. Chỉ sau xác thực thành công mới đặt về góc gốc 0°, chờ 0.5 giây, chuyển đến 90°, giữ 5 giây, quay về 0°, chờ 0.5 giây rồi detach. Thời gian về vị trí, pulse min/max cần hiệu chỉnh theo servo và tải thực tế. Ngắt PWM không bảo đảm giữ lực ở góc đó.
+- Chu kỳ servo dùng timer độc lập với vòng đọc camera/AI. Thoát app sẽ hủy timer và ngắt PWM ngay, **không tự di chuyển servo về 0° khi Ctrl+C giữa chu kỳ**.
 
-| Tên Đèn | Cột | Chân GPIO (BCM) | Chân Vật Lý (Header 40-pin) | Ghi Chú |
-| :--- | :---: | :---: | :---: | :--- |
-| **RED_1** | Cột 1 | `GPIO 27` | Pin 13 | Đỏ Cột 1 |
-| **GREEN_1**| Cột 1 | `GPIO 17` | Pin 11 | Xanh Cột 1 |
-| **RED_2** | Cột 2 | `GPIO 22` | Pin 15 | Đỏ Cột 2 |
-| **GREEN_2**| Cột 2 | `GPIO 18` | Pin 12 | Xanh Cột 2 |
-| **RED_3** | Cột 3 | `GPIO 23` | Pin 16 | Đỏ Cột 3 |
-| **GREEN_3**| Cột 3 | `GPIO 24` | Pin 18 | Xanh Cột 3 |
-| **RED_4** | Cột 4 | `GPIO 25` | Pin 22 | Đỏ Cột 4 |
-| **GREEN_4**| Cột 4 | `GPIO 12` | Pin 32 | Xanh Cột 4 |
-| **RED_5** | Cột 5 | `GPIO 16` | Pin 36 | Đỏ Cột 5 |
-| **GREEN_5**| Cột 5 | `GPIO 26` | Pin 37 | Xanh Cột 5 |
-| **GND** | Chung | `GND` | Pin 6, 9, 14, 20, 25, 30, 34, 39 | Cực âm chung (nối qua trở) |
+Tham khảo: [gpiozero HC-SR04](https://gpiozero.readthedocs.io/en/stable/api_input.html#distancesensor-hc-sr04), [gpiozero AngularServo](https://gpiozero.readthedocs.io/en/stable/api_output.html#angularservo).
 
-*(Lưu ý: Có thể thay đổi các chân GPIO này bất kỳ lúc nào trong file cấu hình `.env`).*
+## Cài lần đầu
 
----
+Pi 4, Raspberry Pi OS Trixie aarch64, USB webcam. Từ Remote shell Raspberry Pi Connect:
 
-## 🚀 HƯỚNG DẪN CÀI ĐẶT & CHẠY NHANH (QUICKSTART)
-
-### Bước 1: Clone kho mã nguồn về Raspberry Pi
-Mở Terminal trên Pi và chạy lệnh:
 ```bash
-git clone https://github.com/<tai_khoan_cua_ban>/pi4-edge-face-recognition.git
+git clone https://github.com/Violetta147/pi4-edge-face-recognition.git
 cd pi4-edge-face-recognition
-```
-
-### Bước 2: Cài đặt môi trường tự động (1-Click Setup)
-Chạy script cài đặt tự động:
-```bash
-chmod +x setup.sh
-./setup.sh
-```
-Script sẽ tự động tạo môi trường ảo Python `venv`, cài các thư viện `onnxruntime`, `opencv`, `gpiozero`, và tạo sẵn file cấu hình `.env`.
-
-### Bước 3: Kích hoạt môi trường ảo & Kiểm tra đèn LED
-```bash
+bash setup.sh
 source venv/bin/activate
-
-# Chạy bài test kiểm tra chớp nháy tuần tự 10 đèn LED:
-python -m peripherals.led_matrix
 ```
 
-### Bước 4: Đăng ký khuôn mặt mẫu
-Đứng trước webcam và đăng ký tên của bạn:
+`requirements.txt` đã bổ sung `insightface==2.1`. Không cần CUDA/PyTorch. Setup không ghi đè `.env` đã có.
+
+## Cập nhật bản đã chạy trên Pi
+
+Không xóa `faces.db`, `faces/` hoặc venv. Dừng app bằng Ctrl+C trước khi cập nhật:
+
 ```bash
-python enroll.py --name "Nguyen Van A"
+cd ~/IoT/pi4-edge-face-recognition
+git pull --ff-only origin main
+source venv/bin/activate
+python -m pip install 'insightface==2.1'
+cp .env .env.before-ultrasonic
+nano .env
 ```
-*Nhìn thẳng vào camera và nhấn phím **`s`** để hệ thống tự động chụp 5 góc mặt và lưu vào database SQLite `faces.db`.*
 
-### Bước 5: Khởi chạy hệ thống nhận diện!
-```bash
-python run.py
+Giữ cấu hình camera/model/ngưỡng đang dùng. Thêm hoặc sửa các mục sau theo dây thật:
+
+```dotenv
+ULTRASONIC_TRIGGER_PIN=23
+ULTRASONIC_ECHO_PIN=24
+SERVO_PIN=18
+LED_GREEN_PIN=17
+LED_RED_PIN=27
+ACTIVATION_DISTANCE_CM=60
+RELEASE_DISTANCE_CM=80
+REARM_CLEAR_SECONDS=1
+SERVO_HOME_ANGLE=0
+SERVO_OPEN_ANGLE=90
+SERVO_HOLD_SECONDS=5
+SERVO_RETURN_HOME=true
+SERVO_MOVE_SECONDS=0.5
 ```
-* Cửa sổ camera sẽ hiển thị lên màn hình.
-* Đứng trước camera:
-  * Nếu là bạn: Khung xanh lá + hiển thị Tên và % tương đồng. Cột LED tương ứng **sáng đèn XANH**.
-  * Nếu người lạ: Khung cam + hiển thị `Unknown`. Cột LED tương ứng **sáng cả ĐỎ và XANH**.
-  * Nếu giơ ảnh in / màn hình điện thoại: Khung đỏ + cảnh báo `SPOOF`. Cột LED tương ứng **sáng đèn ĐỎ**!
-* **Nhấn phím `p`:** Chuyển ngay sang chế độ **KHÔNG PAD** (FPS tăng lên 25 FPS, các đèn xanh sáng đếm số người).
-* **Nhấn phím `q`:** Thoát chương trình.
 
----
+Các giá trị bổ sung mặc định được mô tả trong `.env.example`. `LED_RED_PINS`, `LED_GREEN_PINS`, `ENABLE_PAD` cũ không còn được dùng; `--no-pad` và phím `p` bị loại bỏ để không có đường bỏ qua PAD cho servo.
 
-## ⌨️ CÁC TÙY CHỌN DÒNG LỆNH HỮU ÍCH
+## Kiểm tra cảm biến trước khi chạy AI
 
-### 1. Quản lý người dùng trong Database (`enroll.py`):
+Lệnh này chỉ đo khoảng cách, không điều khiển LED hoặc servo:
+
 ```bash
-# Đăng ký trực tiếp qua Webcam (chương trình sẽ hỏi Tên -> mở camera chụp):
-python enroll.py
+GPIOZERO_PIN_FACTORY=lgpio python - <<'PY'
+from dotenv import load_dotenv
+load_dotenv('.env')
+from access_control import Settings
+from gpiozero import DigitalInputDevice, DigitalOutputDevice
+from peripherals.access_hardware import AccessHardware
+import time
 
-# Đăng ký nhanh qua Webcam với tên truyền sẵn:
-python enroll.py --name "Nguyen Van A"
+# Dùng cùng hàm đo khoảng cách của app mà không khởi tạo servo.
+s = Settings.from_env()
+with DigitalOutputDevice(s.trigger_pin, initial_value=False) as trigger, DigitalInputDevice(s.echo_pin, pull_up=False) as echo:
+    probe = type('Probe', (), {})()
+    probe.settings, probe.trigger, probe.echo = s, trigger, echo
+    probe.clock, probe.sleep = time.monotonic, time.sleep
+    probe.last_trigger = float('-inf')
+    try:
+        while True:
+            print('Distance cm:', AccessHardware.distance_cm(probe), flush=True)
+            time.sleep(s.poll_seconds)
+    except KeyboardInterrupt:
+        pass
+PY
+```
 
-# Nạp hàng loạt từ thư mục ảnh faces/<Ten_Nguoi>/anh.jpg:
-python enroll.py --folder faces/
+Đưa vật vào khoảng 30/60/100 cm để đối chiếu bằng thước. `None` là phép đo không hợp lệ/timeout, cần kiểm tra dây/nguồn/module. Dừng bằng Ctrl+C.
 
-# Xem danh sách tất cả những ai đã đăng ký:
+## Đăng ký và chạy
+
+Người đã có `faces.db` trên Pi **không cần đăng ký lại**. Số mẫu DB có thể là 1 vì chương trình lưu vector trung bình của 5 ảnh.
+
+```bash
 python enroll.py --list
-
-# Xóa một người dùng khỏi database:
-python enroll.py --delete "Nguyen Van A"
+# Chỉ dùng nếu cần đăng ký mới, Enter từng lần trong Remote shell:
+env -u DISPLAY -u WAYLAND_DISPLAY python enroll.py --name "Violetta" --camera 0 --samples 5
+export GPIOZERO_PIN_FACTORY=lgpio
+export OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2
+python -u run.py --headless --camera 0
 ```
 
-### 2. Khởi chạy với các cờ tùy chọn (`run.py`):
+Để có cửa sổ ảnh, mở Terminal ngay trong desktop Screen sharing và bỏ `--headless`. Cửa sổ chỉ hiển thị một mặt đang xử lý; khi chờ cảm biến sẽ hiển thị nền trống/trạng thái. Bấm `q` trong cửa sổ để thoát hoặc Ctrl+C trong terminal. Remote shell dùng Ctrl+C.
+
+Nếu dùng `GPIOZERO_PIN_FACTORY=mock`, ECHO mặc định không tự tạo xung: app sẽ không kích hoạt. Mock không phải cách bỏ qua cảm biến; dùng bài test bên dưới để mô phỏng luồng, không kiểm tra phần cứng bằng trạng thái mock.
+
+## Checklist nghiệm thu trên Pi
+
+- [ ] Khi khoảng cách >80 cm: `WAITING`, không mở webcam, không chạy suy luận từng frame.
+- [ ] Khi vật đến <=60 cm: bắt đầu đọc camera, chỉ một mặt được xử lý dù ảnh có nhiều người.
+- [ ] Người thật chưa đăng ký: `UNKNOWN`, chỉ LED xanh sáng, servo không chạy.
+- [ ] Ảnh/màn hình bị PAD phân loại spoof: `SPOOF`, chỉ LED đỏ sáng, servo không chạy. Ghi lại sai phân loại thực tế nếu có.
+- [ ] Người đã đăng ký: đủ xác nhận mới có `REAL_KNOWN`; servo 0→90°, giữ 5 giây, về 0° và ngắt PWM.
+- [ ] Tiếp tục đứng trước cảm biến: `WAIT_CLEAR`, không tự mở lại.
+- [ ] Sau khi đo >=80 cm liên tục 1 giây, tiến lại gần: cho phép lượt xác minh mới.
+- [ ] Mất mặt/ngắt echo/lỗi AI: không cấp quyền mới và không dùng lại tên cũ.
+- [ ] Ctrl+C giải phóng webcam, tắt LED, ngắt PWM và đóng GPIO.
+
+PAD và ngưỡng cosine vẫn là mô hình suy luận, có thể sai. Việc code yêu cầu PAD/so khớp không phải bằng chứng đạt mức bảo mật hoặc độ chính xác trên mọi người/ánh sáng. Cần kiểm tra đúng webcam, cảm biến và servo thực tế.
+
+## Kiểm thử local
+
 ```bash
-# Chạy ép buộc chế độ CÓ PAD ngay từ đầu:
-python run.py --pad
-
-# Chạy ép buộc chế độ KHÔNG PAD:
-python run.py --no-pad
-
-# Chạy qua SSH không cần màn hình desktop (Headless):
-python run.py --headless
-
-# Đổi cổng camera (nếu cắm nhiều webcam):
-python run.py --camera 1
+python -m unittest discover -s tests -v
 ```
 
----
+Các bài test dùng camera/AI/GPIO giả để kiểm tra quyết định, lỗi cảm biến/camera/AI, chỉ xử lý một mặt, không cấp quyền cho spoof/unknown, timer servo và tái kích hoạt. Không cần Pi hoặc ONNX Runtime để chạy chúng; cần `python-dotenv` để import entrypoint. Không thay thế thử nghiệm vật lý trên Pi.
 
-## 📂 CẤU TRÚC THƯ MỤC DỰ ÁN
+Kiểm chứng local ngày 19/10/2026: **23 bài test đạt**; kiểm tra bổ sung với gpiozero 2.0.1 `MockFactory`/`MockPWMPin` đạt cho ánh xạ LED và chu kỳ servo 0→90→giữ 5 giây→0→detach. Chưa chạy luồng siêu âm/servo mới với model, webcam và GPIO thật trên Raspberry Pi. Kết quả nhận diện bạn đã chạy trước đó thuộc phiên bản camera cũ.
 
-```text
-pi4-edge-face-recognition/
-├── database/
-│   ├── __init__.py
-│   └── local_db.py              # SQLite: lưu users, embeddings 512D; Cosine matching
-├── models/                      # Đóng gói 3 weights ONNX nhẹ (~17.8 MB)
-│   ├── detector_scrfd.onnx      # InsightFace SCRFD (~2.5 MB)
-│   ├── antispoof_minifasnet.onnx# MiniFASNet R7 (~1.7 MB - chống giả mạo)
-│   └── recognition_arcface.onnx # ArcFace MobileFaceNet 512D (~13.6 MB)
-├── detection/                   # Wrapper bộ dò InsightFace SCRFD
-├── tracking/                    # Lucas-Kanade Optical Flow Cadence Tracker
-├── antispoof/                   # MiniFASNet Predictor & Temporal Voting
-├── alignment/                   # 5-point landmark affine aligner
-├── recognition/                 # ArcFace Feature Embedder
-├── peripherals/
-│   ├── __init__.py
-│   └── led_matrix.py            # Quản lý 10 LED qua gpiozero (5 đỏ, 5 xanh)
-├── faces/                       # Thư mục lưu ảnh mẫu nạp theo từng người
-├── enroll.py                    # Script đăng ký khuôn mặt (Webcam phím 's' hoặc Folder)
-├── run.py                       # Entrypoint chính của hệ thống
-├── setup.sh                     # Script 1-click cài đặt môi trường
-├── requirements.txt             # Thư viện Python phụ thuộc
-├── .env.example                 # File mẫu cấu hình hệ thống & chân GPIO
-├── .gitignore                   # Loại trừ file tạm, database và venv
-└── README.md                    # Tài liệu hướng dẫn A-Z
-```
-
----
-
-## ❓ CÁC CÂU HỎI THƯỜNG GẶP (TROUBLESHOOTING)
-
-1. **Lỗi `Không thể kết nối với Webcam tại /dev/video0`:**
-   * Kiểm tra xem cáp USB Webcam đã cắm chặt vào Pi chưa bằng lệnh: `ls /dev/video*`.
-   * Nếu webcam nằm ở `/dev/video1` hoặc `/dev/video2`, hãy mở file `.env` và sửa `CAMERA_INDEX=1` (hoặc chạy `python run.py --camera 1`).
-
-2. **Lỗi `gpiozero.exc.BadPinFactory: Unable to load any default pin factory`:**
-   * Hãy đảm bảo bạn đã cài đặt gói `lgpio` bằng lệnh:
-     ```bash
-     pip install lgpio
-     # hoặc trên Pi OS: sudo apt install -y python3-gpiozero python3-lgpio
-     ```
-
-3. **Cơ chế hoạt động & Bộ dò:**
-   * Hệ thống chuẩn hóa sử dụng **InsightFace SCRFD** (`detector_scrfd.onnx` ~2.5 MB) để trích xuất 5 điểm mốc (landmarks) chuẩn xác cho ArcFace và chống rung hình khi theo dõi khuôn mặt.
-   * Nhấn phím `p` trên bàn phím để chuyển đổi giữa 2 chế độ: **CÓ PAD** và **KHÔNG PAD**.
-
----
-*Chúc các bạn hoàn thành bài tập thực hành IoT xuất sắc!*
+File `KE_HOACH_CHAY_PI_TRONG_30_PHUT.md` giữ nguyên tiến độ bản triển khai cũ. Với luồng siêu âm/servo mới, dùng hướng dẫn và checklist trong README này; các bước ma trận 10 LED và `--no-pad` trong kế hoạch cũ không còn áp dụng.

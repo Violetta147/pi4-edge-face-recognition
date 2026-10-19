@@ -1,5 +1,7 @@
 # Kế hoạch chạy dự án trên Raspberry Pi trong 30 phút
 
+> **Cập nhật luồng siêu âm/servo (19/10/2026):** tiến độ bên dưới được giữ nguyên từ bản chạy camera + ma trận LED. Mã hiện tại đã chuyển sang HC-SR04 kích hoạt, xử lý một mặt, PAD luôn bật; người khớp điều khiển servo đến 90°, giữ 5 giây rồi về 0°, người thật chưa đăng ký bật LED xanh, spoof bật LED đỏ. Dùng [README.md](README.md) để cấu hình phần cứng và nghiệm thu bản mới. Các mục `--no-pad`, phím `p` và ma trận 10 LED trong kế hoạch cũ không áp dụng cho bản mới; không cần xóa DB hay đăng ký lại.
+
 - **Ngày lập:** 19/10/2026
 - **Thiết bị:** Raspberry Pi 4B rev 1.5 (RAM 8 GB, Raspberry Pi OS 13 Trixie, `aarch64`)
 - **Serial:** `1000000027d04395`

@@ -12,12 +12,12 @@ echo "=================================================================="
 # 1. Cài đặt các thư viện hệ thống cần thiết cho OpenCV và GPIO
 echo "\n[1/4] Cập nhật hệ thống và cài đặt gói bổ trợ..."
 sudo apt update
-sudo apt install -y python3-venv python3-pip libgl1 libglib2.0-0
+sudo apt install -y python3-venv python3-pip python3-gpiozero python3-lgpio libgl1 libglib2.0-0 v4l-utils
 
 # 2. Tạo môi trường ảo Python venv
 echo "\n[2/4] Tạo môi trường ảo Python (venv)..."
 if [ ! -d "venv" ]; then
-    python3 -m venv venv
+    python3 -m venv --system-site-packages venv
     echo "  -> Đã tạo thư mục venv thành công."
 else
     echo "  -> Môi trường venv đã tồn tại, tiếp tục..."
@@ -43,7 +43,7 @@ echo " [THÀNH CÔNG] HỆ THỐNG ĐÃ SẴN SÀNG HOẠT ĐỘNG!"
 echo "=================================================================="
 echo "Các bước tiếp theo dành cho bạn:"
 echo " 1. Kích hoạt môi trường:  source venv/bin/activate"
-echo " 2. Test phần cứng 10 LED: python -m peripherals.led_matrix"
+echo " 2. Kiểm tra dây HC-SR04, servo vị trí và 2 LED theo README.md; chỉnh .env."
 echo " 3. Đăng ký khuôn mặt:     python enroll.py --name \"Ho Va Ten\""
-echo " 4. Chạy nhận diện:        python run.py"
+echo " 4. Chạy nhận diện:        GPIOZERO_PIN_FACTORY=lgpio python -u run.py --headless"
 echo "==================================================================\n"
